@@ -2,8 +2,15 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, GINConv, BatchNorm, GlobalAttention, GINEConv
+from torch_geometric.nn import GATv2Conv, GINConv, BatchNorm, GINEConv
 from torch_geometric.data import Data, Batch
+
+from torch_geometric.nn import (
+    global_mean_pool,
+    global_max_pool,
+    global_add_pool,
+    GlobalAttention
+)
 
 ############### LSTM Pooling ###############
 class LSTMAttentionPooling(nn.Module):
@@ -74,15 +81,20 @@ class GINGAT(torch.nn.Module):
         self.graph_bn4 = BatchNorm(out_channels)
 
         # Pooling
-        self.pooling_type = pooling_type
         if pooling_type == 'lstm':
             self.pooling = LSTMAttentionPooling(out_channels, out_channels)
         elif pooling_type == 'gru':
             self.pooling = GRUAttentionPooling(out_channels, out_channels)
         elif pooling_type == 'attention':
             self.pooling = GlobalAttention(gate_nn=nn.Linear(out_channels, 1))
+        elif pooling_type == 'mean':
+            self.pooling = global_mean_pool
+        elif pooling_type == 'max':
+            self.pooling = global_max_pool
+        elif pooling_type == 'sum':
+            self.pooling = global_add_pool
         else:
-            raise ValueError("please use lstm, gru or attention for pooling")
+            raise ValueError("please use lstm, gru, attention, mean, max or sum for pooling")
 
         # Define node-level GNN with GATv2Conv (without edge attributes) and fully connected layers
         self.node_conv1 = GATv2Conv(out_channels, hidden_channels, heads=heads, concat=False)
@@ -195,6 +207,8 @@ class GINGAT(torch.nn.Module):
         self.fc1.reset_parameters()
         self.fc2.reset_parameters()
 
+
+
 ############### GAT-GIN ###############
 class GATGIN(torch.nn.Module):
     def __init__(self, node_dim, edge_dim, hidden_channels, out_channels, heads, dropout, pooling_type, num_tasks):
@@ -214,15 +228,20 @@ class GATGIN(torch.nn.Module):
         self.graph_bn4 = BatchNorm(out_channels)
 
         # Pooling
-        self.pooling_type = pooling_type
         if pooling_type == 'lstm':
             self.pooling = LSTMAttentionPooling(out_channels, out_channels)
         elif pooling_type == 'gru':
             self.pooling = GRUAttentionPooling(out_channels, out_channels)
         elif pooling_type == 'attention':
             self.pooling = GlobalAttention(gate_nn=nn.Linear(out_channels, 1))
+        elif pooling_type == 'mean':
+            self.pooling = global_mean_pool
+        elif pooling_type == 'max':
+            self.pooling = global_max_pool
+        elif pooling_type == 'sum':
+            self.pooling = global_add_pool
         else:
-            raise ValueError("please use lstm, gru or attention for pooling")
+            raise ValueError("please use lstm, gru, attention, mean, max or sum for pooling")
 
 
         # Define node-level GNN with GIN (without edge attributes) and fully connected layers
@@ -258,7 +277,7 @@ class GATGIN(torch.nn.Module):
         x = self.graph_bn4(x)
         x = F.relu(x)
 
-        # LSTM and Attention-based pooling
+        # POOLING
         graph_out = self.pooling(x, batch)
 
         # Extract fingerprints and descriptors from data
