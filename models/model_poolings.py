@@ -214,14 +214,30 @@ class GINGAT(torch.nn.Module):
     def create_dummy_graph(self, graph_embedding, features, device):
         # graph_embedding: (1, out_dim)
         # features: list of (1, feat_dim)
-        features = [f.to(device) if f.dim() == 2 else f.unsqueeze(0).to(device) for f in features]
-        central_node_features = graph_embedding.squeeze(0)  # (out_dim,)
-        # create nodes: central + flattened features (we keep each feature vector as a node)
-        node_features = torch.cat([central_node_features.unsqueeze(0)] + [f.squeeze(0) for f in features], dim=0)
-        edges = [[0, i] for i in range(1, len(features) + 1)]
+        
+        # Central node: always 2D
+        central_node_features = graph_embedding.squeeze(0).unsqueeze(0)  # (1, out_dim)
+        
+        # Ensure each feature is also 2D row (1, feat_dim)
+        feat_nodes = []
+        for f in features:
+            f2 = f
+            if f2.dim() == 1:  # shape (feat_dim,)
+                f2 = f2.unsqueeze(0)  # -> (1, feat_dim)
+            elif f2.dim() > 2:
+                f2 = f2.view(1, -1)  # flatten any higher dims
+            feat_nodes.append(f2)
+        
+        # Concatenate into node matrix
+        node_features = torch.cat([central_node_features] + feat_nodes, dim=0)  # (1+num_feats, feat_dim_varies)
+        
+        # Build star edges from central node (0) to each feature node
+        edges = [[0, i] for i in range(1, len(feat_nodes) + 1)]
         edge_index = torch.tensor(edges, dtype=torch.long, device=device).t().contiguous()
+        
         dummy_graph = Data(x=node_features, edge_index=edge_index)
         return dummy_graph
+
 
     def reset_parameters(self):
         # reset params like before
