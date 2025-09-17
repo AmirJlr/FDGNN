@@ -55,7 +55,7 @@ class GINGAT(nn.Module):
         """
         Args:
             feature_mode (str): Controls which handcrafted features to use.
-                Options: "fingerprints", "descriptors", "both".
+                Options: "fps", "descs", "both".
         """
         super().__init__()
         self.use_dummy = use_dummy
@@ -143,14 +143,14 @@ class GINGAT(nn.Module):
         graph_out = self.pooling(x, batch)  # [batch_size, out_channels]
 
         # === Feature Selection based on `feature_mode` ===
-        if self.feature_mode == "fingerprints":
+        if self.feature_mode == "fps":
             selected_features = [
                 data.ECFP.to(device),
                 data.Topological.to(device),
                 data.MACCS.to(device),
                 data.EState.to(device)
             ]
-        elif self.feature_mode == "descriptors":
+        elif self.feature_mode == "descs":
             selected_features = [
                 data.Rdkit2D.to(device),
                 data.Phar2D.to(device)
