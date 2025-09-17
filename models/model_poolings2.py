@@ -9,8 +9,7 @@ from torch_geometric.data import Data, Batch
 
 ############### LSTM Pooling ###############
 class LSTMAttentionPooling(nn.Module):
-    # Kept original __init__ signature (num_layers=1 default)
-    def __init__(self, input_dim, hidden_dim, num_layers=1): 
+    def __init__(self, input_dim, hidden_dim, num_layers=1):
         super().__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         self.attention = nn.Linear(hidden_dim, 1)
@@ -20,99 +19,81 @@ class LSTMAttentionPooling(nn.Module):
         pooled_outputs = []
         for i in range(num_graphs):
             node_embeds = x[batch == i].unsqueeze(0)  # [1, num_nodes_in_graph, input_dim]
-            
-            # Initialize hidden and cell states for this graph
-            # States should match the LSTM's num_layers and hidden_size
             h_0 = torch.zeros(self.lstm.num_layers, 1, self.lstm.hidden_size, device=x.device)
             c_0 = torch.zeros(self.lstm.num_layers, 1, self.lstm.hidden_size, device=x.device)
-            
-            lstm_out, _ = self.lstm(node_embeds, (h_0, c_0)) # lstm_out: [1, num_nodes_in_graph, hidden_dim]
-
+            lstm_out, _ = self.lstm(node_embeds, (h_0, c_0)) # [1, num_nodes_in_graph, hidden_dim]
             attention_weights = F.softmax(self.attention(lstm_out.squeeze(0)), dim=0) # [num_nodes_in_graph, 1]
             graph_embedding = torch.sum(attention_weights * lstm_out.squeeze(0), dim=0) # [hidden_dim]
             pooled_outputs.append(graph_embedding)
-
         return torch.stack(pooled_outputs, dim=0) # [num_graphs, hidden_dim]
 
 
 ############### GRU Pooling ###############
 class GRUAttentionPooling(nn.Module):
-    # Kept original __init__ signature (num_layers=1 default implicitly)
     def __init__(self, input_dim, hidden_dim):
         super().__init__()
-        # GRU defaults to 1 layer if num_layers is not specified
-        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True) 
+        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
         self.attention = nn.Linear(hidden_dim, 1)
 
     def forward(self, x, batch):
         pooled_outputs = []
         num_graphs = batch.max().item() + 1
-        
         for i in range(num_graphs):
             nodes_in_graph = x[batch == i].unsqueeze(0) # [1, num_nodes_in_graph, input_dim]
-            
-            # Initialize hidden state for this graph
-            h_0 = torch.zeros(self.gru.num_layers, 1, self.gru.hidden_size, device=x.device) # Corrected num_layers
-            
-            gru_out, _ = self.gru(nodes_in_graph, h_0) # gru_out: [1, num_nodes_in_graph, hidden_dim]
-            
+            h_0 = torch.zeros(self.gru.num_layers, 1, self.gru.hidden_size, device=x.device)
+            gru_out, _ = self.gru(nodes_in_graph, h_0) # [1, num_nodes_in_graph, hidden_dim]
             attention_weights = F.softmax(self.attention(gru_out.squeeze(0)), dim=0) # [num_nodes_in_graph, 1]
             graph_embedding = torch.sum(attention_weights * gru_out.squeeze(0), dim=0) # [hidden_dim]
             pooled_outputs.append(graph_embedding)
-            
         return torch.stack(pooled_outputs, dim=0) # [num_graphs, hidden_dim]
 
 
-############### Main Model ###############
+############### Main Model (GINGAT) ###############
 class GINGAT(nn.Module):
-    # Original __init__ signature maintained
     def __init__(self, node_dim, edge_dim, hidden_channels, out_channels, heads,
-                 dropout, pooling_type, num_tasks, use_dummy=True):
+                 dropout, pooling_type, num_tasks, use_dummy=True, feature_mode="both"):
+        """
+        Args:
+            feature_mode (str): Controls which handcrafted features to use.
+                Options: "fingerprints", "descriptors", "both".
+        """
         super().__init__()
         self.use_dummy = use_dummy
         self.pooling_type = pooling_type
-        
-        # Store for later use and dimension consistency
-        self.out_channels = out_channels 
-        self.hidden_channels = hidden_channels 
+        self.feature_mode = feature_mode 
+
+        self.out_channels = out_channels
+        self.hidden_channels = hidden_channels
 
         # === Graph backbone (GINEConv layers) ===
-        # Layer 1
         self.graph_conv1 = GINEConv(nn.Sequential(
             nn.Linear(node_dim, hidden_channels), nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         ), edge_dim=edge_dim)
         self.graph_bn1 = BatchNorm(hidden_channels)
 
-        # Layer 2
         self.graph_conv2 = GINEConv(nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels), nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         ), edge_dim=edge_dim)
         self.graph_bn2 = BatchNorm(hidden_channels)
 
-        # Layer 3
         self.graph_conv3 = GINEConv(nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels), nn.ReLU(),
             nn.Linear(hidden_channels, hidden_channels)
         ), edge_dim=edge_dim)
         self.graph_bn3 = BatchNorm(hidden_channels)
 
-        # Layer 4 (Output layer of GNN backbone)
         self.graph_conv4 = GINEConv(nn.Sequential(
-            nn.Linear(hidden_channels, out_channels), nn.ReLU(), # Output here is `out_channels`
+            nn.Linear(hidden_channels, out_channels), nn.ReLU(),
             nn.Linear(out_channels, out_channels)
         ), edge_dim=edge_dim)
-        self.graph_bn4 = BatchNorm(out_channels) # BatchNorm for `out_channels`
+        self.graph_bn4 = BatchNorm(out_channels)
 
         # === Graph Pooling Layer ===
-        # Pooling layer takes `out_channels` as input and should output `out_channels` for consistency
-        # For LSTMAttentionPooling and GRUAttentionPooling, hidden_dim is set to out_channels
         if pooling_type == 'lstm':
-            # num_layers defaults to 1 in LSTMAttentionPooling's __init__
             self.pooling = LSTMAttentionPooling(out_channels, out_channels)
         elif pooling_type == 'gru':
-            # num_layers defaults to 1 implicitly in GRUAttentionPooling's __init__
             self.pooling = GRUAttentionPooling(out_channels, out_channels)
         elif pooling_type == 'attention':
             self.pooling = GlobalAttention(gate_nn=nn.Linear(out_channels, 1))
@@ -125,36 +106,30 @@ class GINGAT(nn.Module):
         else:
             raise ValueError("Pooling must be one of 'lstm', 'gru', 'attention', 'mean', 'max', 'sum'")
 
-        # === Dummy graph branch (GATv2Conv layer) ===
+        # === Dummy graph branch ===
         if self.use_dummy:
-            # GATv2Conv takes `out_channels` (from graph_out) as input and outputs `hidden_channels`
             self.node_conv1 = GATv2Conv(out_channels, hidden_channels, heads=heads, concat=False)
             self.node_bn1 = BatchNorm(hidden_channels)
-            # Residual projection layer for the central node (NEW for Residual)
             self.residual_proj = nn.Linear(out_channels, hidden_channels)
         else:
             self.node_conv1 = None
             self.node_bn1 = None
-            self.residual_proj = None # Not used in ablation path
-            # Ablation path: Linear projection created dynamically in `forward`
-            self.ablation_proj = None # Placeholder for dynamic initialization
+            self.residual_proj = None
+            self.ablation_proj = None  # Will be initialized dynamically
 
-        # === Output head (Fully Connected Layers) ===
-        # Input to fc1 is `hidden_channels` from either:
-        # 1. `node_conv1` output + residual (dummy path)
-        # 2. `ablation_proj` output (ablation path)
+        # === Output head ===
         self.fc1 = nn.Linear(hidden_channels, hidden_channels // 2)
         self.fc2 = nn.Linear(hidden_channels // 2, num_tasks)
         self.dropout = nn.Dropout(dropout)
 
-        self.last_attention = None # To store attention weights from GATv2Conv if needed for analysis
+        self.last_attention = None
         self.reset_parameters()
 
     def forward(self, x, edge_index, edge_attr, batch, data):
         device = x.device
         edge_attr = edge_attr.float().to(device)
 
-        # === GNN encoder (Message Passing) ===
+        # === GNN Encoder ===
         x = self.graph_conv1(x, edge_index, edge_attr)
         x = self.graph_bn1(x); x = F.relu(x); x = self.dropout(x)
         x = self.graph_conv2(x, edge_index, edge_attr)
@@ -162,145 +137,148 @@ class GINGAT(nn.Module):
         x = self.graph_conv3(x, edge_index, edge_attr)
         x = self.graph_bn3(x); x = F.relu(x); x = self.dropout(x)
         x = self.graph_conv4(x, edge_index, edge_attr)
-        x = self.graph_bn4(x); x = F.relu(x) # x is [num_nodes_in_batch, out_channels]
+        x = self.graph_bn4(x); x = F.relu(x)  # [num_nodes_in_batch, out_channels]
 
         # === Graph Pooling ===
-        graph_out = self.pooling(x, batch) # graph_out is [batch_size, out_channels]
+        graph_out = self.pooling(x, batch)  # [batch_size, out_channels]
 
-        # Get raw features from the `data` object
-        # Ensure features are correctly shaped [batch_size, feature_dim]
-        # `data.attribute` from PyG's Batch object is already batched
-        fingerprints = [data.ECFP.to(device), data.Topological.to(device),
-                        data.MACCS.to(device), data.EState.to(device)]
-        descriptors = [data.Rdkit2D.to(device), data.Phar2D.to(device)]
-        
-        # Flatten features if they are 1D (e.g., [batch_size]), or ensure they are [batch_size, N]
+        # === Feature Selection based on `feature_mode` ===
+        if self.feature_mode == "fingerprints":
+            selected_features = [
+                data.ECFP.to(device),
+                data.Topological.to(device),
+                data.MACCS.to(device),
+                data.EState.to(device)
+            ]
+        elif self.feature_mode == "descriptors":
+            selected_features = [
+                data.Rdkit2D.to(device),
+                data.Phar2D.to(device)
+            ]
+        elif self.feature_mode == "both":
+            selected_features = [
+                data.ECFP.to(device),
+                data.Topological.to(device),
+                data.MACCS.to(device),
+                data.EState.to(device),
+                data.Rdkit2D.to(device),
+                data.Phar2D.to(device)
+            ]
+        else:
+            raise ValueError(f"Invalid feature_mode: {self.feature_mode}. Choose from 'fingerprints', 'descriptors', 'both'.")
+
+        # Ensure all features are 2D: [batch_size, feature_dim]
         features_2d = []
-        for f in (fingerprints + descriptors):
-            if f.dim() == 1: # If it's just [batch_size] (e.g., a single value per graph)
-                features_2d.append(f.unsqueeze(1)) # Make it [batch_size, 1]
-            else: # Otherwise, it's already [batch_size, feature_dim] or higher
-                features_2d.append(f.view(graph_out.size(0), -1)) # Reshape to [batch_size, some_dim]
+        for f in selected_features:
+            if f.dim() == 1:
+                features_2d.append(f.unsqueeze(1))  # [batch_size, 1]
+            else:
+                features_2d.append(f.view(graph_out.size(0), -1))  # [batch_size, N]
 
-        # === Apply Layer Normalization to graph_out and features (NEW for Norm) ===
-        # This ensures all inputs to the dummy graph (or ablation concat) are on a similar scale.
-        graph_out = F.layer_norm(graph_out, graph_out.size()[1:]) # [batch_size, out_channels]
-
-        normalized_features = []
-        for f in features_2d:
-            # Apply LayerNorm across the feature dimension for each graph
-            norm_f = F.layer_norm(f, f.size()[1:])
-            normalized_features.append(norm_f)
+        # === Apply Layer Normalization ===
+        graph_out = F.layer_norm(graph_out, graph_out.size()[1:])
+        normalized_features = [F.layer_norm(f, f.size()[1:]) for f in features_2d]
 
         if self.use_dummy:
-            # === Dummy graph branch processing ===
+            # === Process via Dummy Graph & GAT ===
             dummy_graphs = []
-            for i in range(graph_out.size(0)): # Iterate through each graph in the batch
-                # create_dummy_graph expects:
-                # graph_embedding: [1, out_channels]
-                # features: list of [1, feature_dim] tensors
+            for i in range(graph_out.size(0)):
                 dummy_graph = self.create_dummy_graph(
-                    graph_out[i].unsqueeze(0),       # Isolate current graph_embedding [1, out_channels]
-                    [f[i].unsqueeze(0) for f in normalized_features], # Use normalized features [1, feature_dim]
+                    graph_out[i].unsqueeze(0),
+                    [f[i].unsqueeze(0) for f in normalized_features],
                     device
                 )
                 dummy_graphs.append(dummy_graph)
 
-            # Batch the dummy graphs for GATv2Conv
             batched_dummy = Batch.from_data_list(dummy_graphs).to(device)
-            x_dummy, edge_index_dummy = batched_dummy.x, batched_dummy.edge_index # x_dummy is [total_nodes_in_dummy_batch, out_channels]
+            x_dummy, edge_index_dummy = batched_dummy.x, batched_dummy.edge_index
 
-            # GATv2Conv forward pass
             out1 = self.node_conv1(x_dummy, edge_index_dummy, return_attention_weights=True)
             if isinstance(out1, tuple):
-                x_node, (attn_edge_index, attn_alpha) = out1 # x_node is [total_nodes_in_dummy_batch, hidden_channels]
+                x_node, (attn_edge_index, attn_alpha) = out1
             else:
                 x_node, attn_edge_index, attn_alpha = out1, None, None
 
             x_node = self.node_bn1(x_node); x_node = F.relu(x_node)
 
-            # Store attention weights if needed for analysis/visualization
             self.last_attention = {
                 "edge_index": attn_edge_index.detach().cpu() if attn_edge_index is not None else None,
                 "alpha": attn_alpha.detach().cpu() if attn_alpha is not None else None
             }
 
-            # Extract the central nodes' features from the GATv2Conv output
-            num_feats_per_graph = len(normalized_features) 
-            stride = num_feats_per_graph + 1 # Each dummy graph has 1 central + num_feats peripheral
+            # Extract central (target) node embeddings
+            num_feats_per_graph = len(normalized_features)
+            stride = num_feats_per_graph + 1
             central_indices = torch.arange(0, len(dummy_graphs) * stride, stride, device=device)
-            
-            processed_central = x_node[central_indices] # [batch_size, hidden_channels]
+            processed_central = x_node[central_indices]  # [batch_size, hidden_channels]
 
-            # === Add Residual Connection (NEW) ===
-            # Project the original graph_out (before GAT) to match hidden_channels
-            original_central = graph_out # [batch_size, out_channels]
-            projected_central = self.residual_proj(original_central) # [batch_size, hidden_channels]
+            # Add Residual Connection
+            projected_central = self.residual_proj(graph_out)  # [batch_size, hidden_channels]
+            x_processed = processed_central + projected_central  # [batch_size, hidden_channels]
 
-            # Add the residual
-            x_processed = processed_central + projected_central # [batch_size, hidden_channels]
-            
-        else: # Ablation path (use_dummy=False)
-            # === Concatenate graph_out and features, then project ===
-            # Use normalized features for a fair comparison
-            feat_cat = torch.cat([graph_out] + normalized_features, dim=1) # [batch_size, total_concat_dim]
-            
-            # Dynamically create ablation_proj if it's the first forward pass
+        else:
+            # === Ablation: Direct Concatenation ===
+            feat_cat = torch.cat([graph_out] + normalized_features, dim=1)  # [batch_size, total_dim]
+
             if self.ablation_proj is None:
                 total_concat_dim = feat_cat.size(1)
-                # Project concatenated features back to `hidden_channels` to align with the dummy branch output
                 self.ablation_proj = nn.Linear(total_concat_dim, self.hidden_channels).to(device)
-                # print(f"Initialized ablation_proj: Input dim {total_concat_dim}, Output dim {self.hidden_channels}")
 
-            x_processed = F.relu(self.ablation_proj(feat_cat)) # [batch_size, hidden_channels]
-            self.last_attention = None # No attention mechanism in this path
+            x_processed = F.relu(self.ablation_proj(feat_cat))  # [batch_size, hidden_channels]
+            self.last_attention = None
 
-        # === Final output head (FC Layers) ===
-        # `x_processed` is consistently [batch_size, hidden_channels]
+        # === Final Prediction Head ===
         x_final = F.relu(self.fc1(x_processed))
         x_final = self.dropout(x_final)
         return self.fc2(x_final)
 
     def create_dummy_graph(self, graph_embedding, features, device):
-        # `graph_embedding`: [1, out_channels] (central node)
-        # `features`: list of [1, feature_dim] tensors (peripheral nodes)
-
-        # Concatenate all node features for the dummy graph
-        node_features = torch.cat([graph_embedding] + features, dim=0) # [1 + num_feats, max_feature_dim]
-        
-        # Create edges from the central node (index 0) to all peripheral feature nodes
-        edges = [[0, i] for i in range(1, len(features) + 1)]
-        
-        # Transpose to get [2, num_edges] format
+        """
+        Creates a dummy graph Data object.
+        Args:
+            graph_embedding: Tensor of shape [1, out_channels] for the central node.
+            features: List of tensors, each of shape [1, feature_dim] for peripheral nodes.
+        Returns:
+            PyG Data object.
+        """
+        node_features = torch.cat([graph_embedding] + features, dim=0)  # [1 + N, D]
+        edges = [[0, i] for i in range(1, len(features) + 1)]  # Central node (0) -> all features
         edge_index = torch.tensor(edges, dtype=torch.long, device=device).t().contiguous()
-
         return Data(x=node_features, edge_index=edge_index)
 
     def reset_parameters(self):
-        # Reset GNN backbone layers
-        self.graph_conv1.reset_parameters(); self.graph_bn1.reset_parameters()
-        self.graph_conv2.reset_parameters(); self.graph_bn2.reset_parameters()
-        self.graph_conv3.reset_parameters(); self.graph_bn3.reset_parameters()
-        self.graph_conv4.reset_parameters(); self.graph_bn4.reset_parameters()
+        # Reset GNN backbone
+        for conv, bn in [
+            (self.graph_conv1, self.graph_bn1),
+            (self.graph_conv2, self.graph_bn2),
+            (self.graph_conv3, self.graph_bn3),
+            (self.graph_conv4, self.graph_bn4)
+        ]:
+            conv.reset_parameters()
+            bn.reset_parameters()
 
-        # Reset pooling layers
-        if hasattr(self.pooling, 'reset_parameters'): # For global_mean_pool etc.
+        # Reset pooling
+        if hasattr(self.pooling, 'reset_parameters'):
             self.pooling.reset_parameters()
-        elif self.pooling_type == 'lstm': # Specific reset for custom LSTM pooling
+        elif self.pooling_type == 'lstm':
             self.pooling.lstm.reset_parameters()
             self.pooling.attention.reset_parameters()
-        elif self.pooling_type == 'gru': # Specific reset for custom GRU pooling
+        elif self.pooling_type == 'gru':
             self.pooling.gru.reset_parameters()
             self.pooling.attention.reset_parameters()
 
-        # Reset dummy graph specific layers
+        # Reset dummy graph components
         if self.use_dummy:
-            if self.node_conv1 is not None: self.node_conv1.reset_parameters()
-            if self.node_bn1 is not None: self.node_bn1.reset_parameters()
-            # Reset the new residual projection layer (NEW)
-            if self.residual_proj is not None: self.residual_proj.reset_parameters()
-        else: # Reset ablation projection layer
-            if self.ablation_proj is not None: self.ablation_proj.reset_parameters()
+            if self.node_conv1 is not None:
+                self.node_conv1.reset_parameters()
+            if self.node_bn1 is not None:
+                self.node_bn1.reset_parameters()
+            if self.residual_proj is not None:
+                self.residual_proj.reset_parameters()
+        else:
+            if self.ablation_proj is not None:
+                self.ablation_proj.reset_parameters()
 
-        # Reset final FC layers
-        self.fc1.reset_parameters(); self.fc2.reset_parameters()
+        # Reset final layers
+        self.fc1.reset_parameters()
+        self.fc2.reset_parameters()
