@@ -101,7 +101,8 @@ def train_cls(model, optimizer, loss_function, train_loader, val_loader, num_epo
 
         print(f'Epoch: {epoch:03d}, Train loss: {train_loss:.4f}, Train ROC-AUC: {train_auc:.4f}, Val loss: {val_loss:.4f}, Val ROC-AUC: {val_auc:.4f}')
 
-        if val_auc > best_val_auc : 
+        if val_loss < best_val_loss:
+        # if val_auc > best_val_auc : 
             best_val_auc = val_auc
             best_val_loss = val_loss
             best_model = deepcopy(model)

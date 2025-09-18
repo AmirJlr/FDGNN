@@ -55,7 +55,7 @@ class GRUAttentionPooling(nn.Module):
 class GINGAT(nn.Module):
     def __init__(self, node_dim, edge_dim, hidden_channels, out_channels, heads,
                  dropout, pooling_type, num_tasks, use_dummy=True, feature_mode="both",
-                 num_gin_layers=4, num_gat_layers=2):  # <-- ADDED num_gin_layers
+                 num_gin_layers=4, num_gat_layers=1):  
         """
         Args:
             feature_mode (str): Controls which handcrafted features to use.
@@ -202,6 +202,9 @@ class GINGAT(nn.Module):
 
             batched_dummy = Batch.from_data_list(dummy_graphs).to(device)
             x_dummy, edge_index_dummy = batched_dummy.x, batched_dummy.edge_index
+
+            # === CRITICAL: Store the batch vector for attention visualization ===
+            self.last_attention["batch"] = batched_dummy.batch 
 
             # Apply stack of GAT layers
             for i, (conv, bn) in enumerate(zip(self.node_convs, self.node_bns)):
