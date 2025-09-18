@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch.nn import MSELoss
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau 
 
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, TopKPooling, global_mean_pool
@@ -63,15 +64,19 @@ def run_epoch_reg(model, optimizer, data_loader, loss_function, device, edge_att
 
 
 
-def train_reg(model, optimizer,loss_function, train_loader, val_loader, num_epochs, device, edge_attr, pass_data, tensorboard_writer):
-   
-    writer = SummaryWriter(f'runs/{tensorboard_writer}')  # More descriptive run name
+def train_reg(model, optimizer, loss_function, train_loader, val_loader, num_epochs, device, edge_attr, pass_data, tensorboard_writer):
+    writer = SummaryWriter(f'runs/{tensorboard_writer}')
+
+    # === Initialize Scheduler ===
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
     best_model = None
-    best_val_rmse = float('inf')  # Initialize with positive infinity for minimization
+    best_val_rmse = float('inf')
+    patience_counter = 0
+    PATIENCE = 10  # Stop if no improvement for 10 epochs
 
     for epoch in range(1, num_epochs + 1):
-        train_loss, train_rmse = run_epoch_reg(model, optimizer, train_loader,loss_function, device, edge_attr, pass_data)
+        train_loss, train_rmse = run_epoch_reg(model, optimizer, train_loader, loss_function, device, edge_attr, pass_data)
         writer.add_scalar('loss/train', train_loss, epoch)
         writer.add_scalar('rmse/train', train_rmse, epoch)
 
@@ -79,18 +84,43 @@ def train_reg(model, optimizer,loss_function, train_loader, val_loader, num_epoc
         writer.add_scalar('loss/val', val_loss, epoch)
         writer.add_scalar('rmse/val', val_rmse, epoch)
 
-        print(f'Epoch: {epoch:03d}, Train loss: {train_loss:.4f}, Train RMSE: {train_rmse:.4f}, Val loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}')
+        # Ensure scalars for printing and comparison
+        train_loss = float(train_loss)
+        train_rmse = float(train_rmse)
+        val_loss = float(val_loss)
+        val_rmse = float(val_rmse)
 
-        if val_rmse < best_val_rmse:  # Track best model based on lowest validation RMSE
+        print(f'Epoch: {epoch:03d}, Train Loss: {train_loss:.4f}, Train RMSE: {train_rmse:.4f}, Val Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}')
+
+        # === Step the scheduler based on validation RMSE ===
+        scheduler.step(val_rmse)
+
+        # === Check for improvement ===
+        if val_rmse < best_val_rmse:
             best_val_rmse = val_rmse
             best_model = deepcopy(model)
+            patience_counter = 0
 
-    writer.close()  # Close TensorBoard writer
+            # === Optional: Save best model to disk ===
+            # torch.save(model.state_dict(), f'checkpoints/best_model_{tensorboard_writer}.pth')
+            # print(f"✅ Model saved at epoch {epoch} with Val RMSE: {val_rmse:.4f}")
+
+        else:
+            patience_counter += 1
+            print(f"⚠️  No improvement. Patience: {patience_counter}/{PATIENCE}")
+
+        # === Early stopping check ===
+        if patience_counter >= PATIENCE:
+            print(f"🛑 Early stopping triggered at epoch {epoch}.")
+            break
+
+    writer.close()
+
     return {
         'best_model': best_model,
-        'best_val_rmse': best_val_rmse
+        'best_val_rmse': best_val_rmse,
+        'stopped_epoch': epoch  # Optional: return when training stopped
     }
-
 
 # # After training
 # results = train_reg(model, optimizer, loss_function, train_data, val_data, num_epochs, device, edge_attr, pass_data, tensorboard_writer)

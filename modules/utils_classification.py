@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 from torch.nn import Linear
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from torch_geometric.nn import GINConv
 from torch_geometric.nn import global_add_pool
@@ -82,36 +83,54 @@ def run_epoch_cls(model, optimizer, data_loader, loss_function, device, edge_att
 
 
 
-def train_cls(model, optimizer, loss_function, train_loader, val_loader, num_epochs, device, edge_attr, pass_data, tensorboard_writer):
 
+def train_cls(model, optimizer, loss_function, train_loader, val_loader, num_epochs, device, edge_attr, pass_data, tensorboard_writer):
     writer = SummaryWriter(f'runs/{tensorboard_writer}')
+
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
     best_model = None
     best_val_auc = 0
     best_val_loss = float('inf')
+    patience_counter = 0
+    PATIENCE = 10  # Stop training if no improvement for 10 epochs
 
     for epoch in range(1, num_epochs + 1):
-        train_loss, train_auc = run_epoch_cls(model, optimizer, train_loader,loss_function, device, edge_attr, pass_data)
+        train_loss, train_auc = run_epoch_cls(model, optimizer, train_loader, loss_function, device, edge_attr, pass_data)
         writer.add_scalar('loss/train', train_loss, epoch)
         writer.add_scalar('auc/train', train_auc, epoch)
 
-        val_loss, val_auc = run_epoch_cls(model, None, val_loader,loss_function, device, edge_attr, pass_data)
+        val_loss, val_auc = run_epoch_cls(model, None, val_loader, loss_function, device, edge_attr, pass_data)
         writer.add_scalar('loss/val', val_loss, epoch)
         writer.add_scalar('auc/val', val_auc, epoch)
 
         print(f'Epoch: {epoch:03d}, Train loss: {train_loss:.4f}, Train ROC-AUC: {train_auc:.4f}, Val loss: {val_loss:.4f}, Val ROC-AUC: {val_auc:.4f}')
 
+        # Step the scheduler
+        scheduler.step(val_loss)
+
+        # Check for improvement
         if val_loss < best_val_loss:
-        # if val_auc > best_val_auc : 
             best_val_auc = val_auc
             best_val_loss = val_loss
             best_model = deepcopy(model)
+            patience_counter = 0  # Reset counter
+            print(f"✅ New best model saved at epoch {epoch} with Val Loss: {val_loss:.4f}")
+        else:
+            patience_counter += 1
+            print(f"⚠️  No improvement. Patience: {patience_counter}/{PATIENCE}")
 
-    writer.close()  # Close TensorBoard writer
+        # Early stopping check
+        if patience_counter >= PATIENCE:
+            print(f"🛑 Early stopping triggered at epoch {epoch}.")
+            break
+
+    writer.close()
     return {
         'best_model': best_model,
         'best_val_loss': best_val_loss,
-        'best_val_auc': best_val_auc
+        'best_val_auc': best_val_auc,
+        'stopped_epoch': epoch  # Optional: return when training stopped
     }
 
 
