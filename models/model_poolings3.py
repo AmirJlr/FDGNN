@@ -134,7 +134,7 @@ class GINGAT(nn.Module):
         self.fc2 = nn.Linear(hidden_channels // 2, num_tasks)
         self.dropout = nn.Dropout(dropout)
 
-        self.last_attention = None
+        self.last_attention = {}
         self.reset_parameters()
 
     def forward(self, x, edge_index, edge_attr, batch, data):
