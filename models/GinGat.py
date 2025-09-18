@@ -203,9 +203,13 @@ class GINGAT(nn.Module):
                 
                 if isinstance(out, tuple):
                     x_dummy, (returned_edge_index, returned_alpha) = out
-                    # Update current_edge_index for the next layer
-                    current_edge_index = returned_edge_index
-                    # Only store attention from the LAST layer for visualization
+                    current_edge_index = returned_edge_index # Update for next layer
+                    
+                    # === CRITICAL FIX: Average across attention heads ===
+                    if returned_alpha.dim() > 1:
+                        returned_alpha = returned_alpha.mean(dim=1)  # Average over heads, keep per-edge dim
+                    
+                    # Only store from the LAST layer
                     if i == len(self.node_convs) - 1:
                         final_alpha = returned_alpha
                         final_edge_index = returned_edge_index
@@ -226,10 +230,7 @@ class GINGAT(nn.Module):
             self.last_attention["edge_index"] = final_edge_index.detach().cpu() if final_edge_index is not None else None
             self.last_attention["alpha"] = final_alpha.detach().cpu() if final_alpha is not None else None
         
-            # After storing attention, add this for debugging:
-            if self.last_attention["alpha"] is not None:
-                print(f"✅ Stored attention: Alpha shape = {self.last_attention['alpha'].shape}, Edge index shape = {self.last_attention['edge_index'].shape}")
-
+            
             # Extract central node
             num_feats_per_graph = len(normalized_features)
             stride = num_feats_per_graph + 1
