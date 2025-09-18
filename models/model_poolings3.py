@@ -225,10 +225,9 @@ class GINGAT(nn.Module):
                 if i == 0 and self.residual_proj is not None:
                     x_dummy = x_dummy + self.residual_proj(initial_x)
 
-            self.last_attention = {
-                "edge_index": attn_edge_index.detach().cpu() if attn_edge_index is not None else None,
-                "alpha": attn_alpha.detach().cpu() if attn_alpha is not None else None
-            }
+            # Update the existing dictionary — DO NOT overwrite it
+            self.last_attention["edge_index"] = attn_edge_index.detach().cpu() if attn_edge_index is not None else None
+            self.last_attention["alpha"] = attn_alpha.detach().cpu() if attn_alpha is not None else None
 
             # Extract central (target) node embeddings (Node 0 in each dummy graph)
             num_feats_per_graph = len(normalized_features)
