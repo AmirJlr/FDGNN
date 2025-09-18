@@ -187,23 +187,34 @@ class GINGAT(nn.Module):
             batched_dummy = Batch.from_data_list(dummy_graphs).to(device)
             x_dummy, edge_index_dummy = batched_dummy.x, batched_dummy.edge_index
 
+            # === CRITICAL: Store the batch vector for attention visualization ===
             self.last_attention["batch"] = batched_dummy.batch
+
+            # Initialize edge_index for the first GAT layer
+            current_edge_index = edge_index_dummy
 
             # Apply GAT layers
             for i, (conv, bn) in enumerate(zip(self.node_convs, self.node_bns)):
                 if i == 0 and self.residual_proj is not None:
                     initial_x = x_dummy
 
-                out = conv(x_dummy, edge_index_dummy, return_attention_weights=True)
-
+                # Pass the current edge_index to the GAT layer
+                out = conv(x_dummy, current_edge_index, return_attention_weights=True)
+                
                 if isinstance(out, tuple):
                     x_dummy, (returned_edge_index, returned_alpha) = out
+                    # Update current_edge_index for the next layer
                     current_edge_index = returned_edge_index
-                    current_alpha = returned_alpha
+                    # Only store attention from the LAST layer for visualization
+                    if i == len(self.node_convs) - 1:
+                        final_alpha = returned_alpha
+                        final_edge_index = returned_edge_index
                 else:
                     x_dummy = out
-                    current_edge_index = None
-                    current_alpha = None
+                    # If no attention returned, skip storing
+                    if i == len(self.node_convs) - 1:
+                        final_alpha = None
+                        final_edge_index = None
 
                 x_dummy = bn(x_dummy)
                 x_dummy = F.relu(x_dummy)
@@ -211,9 +222,13 @@ class GINGAT(nn.Module):
                 if i == 0 and self.residual_proj is not None:
                     x_dummy = x_dummy + self.residual_proj(initial_x)
 
-            # Store aligned tensors
-            self.last_attention["edge_index"] = current_edge_index.detach().cpu() if current_edge_index is not None else None
-            self.last_attention["alpha"] = current_alpha.detach().cpu() if current_alpha is not None else None
+            # Store attention from the FINAL GAT layer only
+            self.last_attention["edge_index"] = final_edge_index.detach().cpu() if final_edge_index is not None else None
+            self.last_attention["alpha"] = final_alpha.detach().cpu() if final_alpha is not None else None
+        
+            # After storing attention, add this for debugging:
+            if self.last_attention["alpha"] is not None:
+                print(f"✅ Stored attention: Alpha shape = {self.last_attention['alpha'].shape}, Edge index shape = {self.last_attention['edge_index'].shape}")
 
             # Extract central node
             num_feats_per_graph = len(normalized_features)
