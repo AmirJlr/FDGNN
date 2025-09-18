@@ -209,25 +209,29 @@ class GINGAT(nn.Module):
             # Apply stack of GAT layers
             for i, (conv, bn) in enumerate(zip(self.node_convs, self.node_bns)):
                 if i == 0 and self.residual_proj is not None:
-                    # Save for residual after first layer
                     initial_x = x_dummy
 
+                # Get output and attention weights
                 out = conv(x_dummy, edge_index_dummy, return_attention_weights=True)
+                
                 if isinstance(out, tuple):
-                    x_dummy, (attn_edge_index, attn_alpha) = out
+                    x_dummy, (returned_edge_index, returned_alpha) = out
+                    # returned_edge_index might be different from edge_index_dummy!
+                    # We need to use returned_edge_index for visualization
+                    current_edge_index = returned_edge_index
+                    current_alpha = returned_alpha
                 else:
-                    x_dummy, attn_edge_index, attn_alpha = out, None, None
+                    x_dummy, current_edge_index, current_alpha = out, None, None
 
                 x_dummy = bn(x_dummy)
                 x_dummy = F.relu(x_dummy)
 
-                # Apply residual connection after first layer if dimensions changed
                 if i == 0 and self.residual_proj is not None:
                     x_dummy = x_dummy + self.residual_proj(initial_x)
 
-            # Update the existing dictionary — DO NOT overwrite it
-            self.last_attention["edge_index"] = attn_edge_index.detach().cpu() if attn_edge_index is not None else None
-            self.last_attention["alpha"] = attn_alpha.detach().cpu() if attn_alpha is not None else None
+            # Store the correct edge_index and alpha for visualization
+            self.last_attention["edge_index"] = current_edge_index.detach().cpu() if current_edge_index is not None else None
+            self.last_attention["alpha"] = current_alpha.detach().cpu() if current_alpha is not None else None
 
             # Extract central (target) node embeddings (Node 0 in each dummy graph)
             num_feats_per_graph = len(normalized_features)
