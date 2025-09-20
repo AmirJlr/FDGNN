@@ -364,7 +364,8 @@ class DTsetBasic(InMemoryDataset):
                  ECFP, Topological, MACCS, EState, Rdkit2D, Phar2D):
         self.filename = filename
         self.smiles_column = smiles_column
-        self.label_column = label_column
+        # Allow label_column to be string or list of one string
+        self.label_column = [label_column] if isinstance(label_column, str) else label_column
 
         self.ECFP = ECFP
         self.Topological = Topological
@@ -372,9 +373,6 @@ class DTsetBasic(InMemoryDataset):
         self.EState = EState
         self.Rdkit2D = Rdkit2D
         self.Phar2D = Phar2D
-
-        # self.Phar3D = Phar3D
-        # self.Rdkit3D = Rdkit3D
 
         super().__init__(root)
         self.load(self.processed_paths[0])
@@ -388,23 +386,28 @@ class DTsetBasic(InMemoryDataset):
         return ['data.pt']
 
     def download(self):
-        pass  # Implement download logic if needed
+        pass
 
     def process(self):
-        # Load raw data
         data_path = os.path.join(self.raw_dir, self.filename)
         df = pd.read_csv(data_path)
 
         graph_list = []
-        for i, smiles in tqdm(enumerate(df[self.smiles_column])):
-
+        for i, smiles in tqdm(enumerate(df[self.smiles_column]), desc="Processing SMILES"):
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
-                continue  # Skip invalid SMILES strings
+                continue
 
             g = from_smiles(smiles)
             g.x = g.x.float()
-            g.y = torch.tensor(df[self.label_column][i], dtype=torch.float).view(1, -1)
+
+            # Extract label(s) — now always list
+            label_vals = df.loc[i, self.label_column].values.astype(np.float32)
+            g.y = torch.tensor(label_vals, dtype=torch.float).view(1, -1)  # Shape: [1, num_tasks=1]
+
+            # Optional: Warn if NaN
+            if torch.isnan(g.y).any():
+                print(f"⚠️  NaN label at index {i} for SMILES: {smiles}")
 
             g.ECFP = torch.tensor(self.ECFP[i], dtype=torch.float).view(1, -1)
             g.Topological = torch.tensor(self.Topological[i], dtype=torch.float).view(1, -1)
@@ -413,24 +416,88 @@ class DTsetBasic(InMemoryDataset):
             g.Rdkit2D = torch.tensor(self.Rdkit2D[i], dtype=torch.float).view(1, -1)
             g.Phar2D = torch.tensor(self.Phar2D[i], dtype=torch.float).view(1, -1)
 
-            # g.Phar3D = torch.tensor(self.Phar3D[i], dtype=torch.float).view(1, -1)
-            # g.Rdkit3D = torch.tensor(self.Rdkit3D[i], dtype=torch.float).view(1, -1)
-
             graph_list.append(g)
 
         data_list = graph_list
 
-        # Apply pre-filter and pre-transform
         if self.pre_filter is not None:
             data_list = [data for data in data_list if self.pre_filter(data)]
-
         if self.pre_transform is not None:
             data_list = [self.pre_transform(data) for data in data_list]
 
-        # Save processed data
         self.save(data_list, self.processed_paths[0])
 
 # dataset_64 = DTsetBasic(root='basic-64', filename='bace.csv', smiles_column='mol', label_column='Class',
 #     ECFP=ecfp_reduced, Topological=topological_reduced, MACCS=maccs_reduced,
 #     EState=estate_reduced, Rdkit2D=rdkit2D_reduced, Phar2D=phar2D_reduced)
 
+
+
+class DTsetBasicMulti(InMemoryDataset):
+    def __init__(self, root, filename, smiles_column,
+                 ECFP, Topological, MACCS, EState, Rdkit2D, Phar2D):
+        self.filename = filename
+        self.smiles_column = smiles_column
+
+        self.ECFP = ECFP
+        self.Topological = Topological
+        self.MACCS = MACCS
+        self.EState = EState
+        self.Rdkit2D = Rdkit2D
+        self.Phar2D = Phar2D
+
+        super().__init__(root)
+        self.load(self.processed_paths[0])
+
+    @property
+    def raw_file_names(self):
+        return [self.filename]
+
+    @property
+    def processed_file_names(self):
+        return ['data.pt']
+
+    def download(self):
+        pass
+
+    def process(self):
+        data_path = os.path.join(self.raw_dir, self.filename)
+        df = pd.read_csv(data_path)
+
+        # Get all label columns: everything except smiles_column
+        label_columns = [col for col in df.columns if col != self.smiles_column]
+
+        graph_list = []
+        for i, smiles in tqdm(enumerate(df[self.smiles_column]), desc="Processing SMILES"):
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                continue
+
+            g = from_smiles(smiles)
+            g.x = g.x.float()
+
+            # Extract all task labels
+            label_vals = df.loc[i, label_columns].values.astype(np.float32)
+            g.y = torch.tensor(label_vals, dtype=torch.float).view(1, -1)  # Shape: [1, num_tasks]
+
+            # Optional: Log if all labels missing
+            if torch.isnan(g.y).all():
+                print(f"⚠️  All labels NaN at index {i} for SMILES: {smiles}")
+
+            g.ECFP = torch.tensor(self.ECFP[i], dtype=torch.float).view(1, -1)
+            g.Topological = torch.tensor(self.Topological[i], dtype=torch.float).view(1, -1)
+            g.MACCS = torch.tensor(self.MACCS[i], dtype=torch.float).view(1, -1)
+            g.EState = torch.tensor(self.EState[i], dtype=torch.float).view(1, -1)
+            g.Rdkit2D = torch.tensor(self.Rdkit2D[i], dtype=torch.float).view(1, -1)
+            g.Phar2D = torch.tensor(self.Phar2D[i], dtype=torch.float).view(1, -1)
+
+            graph_list.append(g)
+
+        data_list = graph_list
+
+        if self.pre_filter is not None:
+            data_list = [data for data in data_list if self.pre_filter(data)]
+        if self.pre_transform is not None:
+            data_list = [self.pre_transform(data) for data in data_list]
+
+        self.save(data_list, self.processed_paths[0])
