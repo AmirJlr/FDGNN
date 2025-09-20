@@ -152,14 +152,24 @@ def train_cls(model, optimizer, loss_function, train_loader, val_loader, num_epo
 ######### Multi Task Classification #########
 
 def multi_task_loss(pred, target, loss_function):
+    """
+    Compute multi-task loss ignoring NaN targets (missing labels).
+    Assumes pred and target have shape [batch_size, num_tasks].
+    """
     mask = ~torch.isnan(target)
     if mask.any():
+        # Only compute loss where labels are present
         loss = loss_function(pred[mask], target[mask].to(torch.float32))
-        return loss.mean()  # Reduce the loss across the batch
-    return torch.tensor(0.0, requires_grad=True)
+        return loss.mean()  # Reduce across all valid entries
+    return torch.tensor(0.0, device=pred.device, requires_grad=True)
 
 
 def run_epoch_multi_cls(model, optimizer, data_loader, loss_function, device, edge_attr, pass_data):
+    """
+    Runs a single epoch for multi-task classification.
+    Handles missing labels (NaN) gracefully.
+    Returns: average loss, average ROC-AUC across tasks (ignoring tasks with no valid labels).
+    """
     model.to(device)
     model.train() if optimizer is not None else model.eval()
 
@@ -170,6 +180,7 @@ def run_epoch_multi_cls(model, optimizer, data_loader, loss_function, device, ed
     for step, data in enumerate(tqdm(data_loader, desc="Iteration")):
         data = data.to(device)
 
+        # Forward pass
         if edge_attr:
             if pass_data:
                 pred = model(data.x, data.edge_index, data.edge_attr, data.batch, data)
@@ -181,67 +192,101 @@ def run_epoch_multi_cls(model, optimizer, data_loader, loss_function, device, ed
             else:
                 pred = model(data.x, data.edge_index, data.batch)
 
+        # Compute loss
         loss = multi_task_loss(pred, data.y, loss_function)
 
+        # Backward pass
         if optimizer is not None:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-        losses.append(loss.detach().cpu().numpy())
-        y_true.append(data.y.view(pred.shape).detach().cpu())
+        # Collect for metrics
+        losses.append(loss.detach().cpu().item())  # .item() for scalar
+        y_true.append(data.y.detach().cpu())
         y_pred.append(pred.detach().cpu())
 
-    y_true = torch.cat(y_true, dim=0).numpy()
-    y_pred = torch.cat(y_pred, dim=0).numpy()
+    # Concatenate all batches
+    y_true = torch.cat(y_true, dim=0).numpy()  # Shape: [N, num_tasks]
+    y_pred = torch.cat(y_pred, dim=0).numpy()  # Shape: [N, num_tasks]
 
-    # Calculate ROC-AUC score for each task using sklearn
-    auc_roc = []
+    # Compute ROC-AUC per task
+    auc_roc_list = []
     for i in range(y_true.shape[1]):
-        valid_indices = ~np.isnan(y_true[:, i])
-        if valid_indices.any():
+        mask = ~np.isnan(y_true[:, i])
+        if mask.sum() > 1:  # Need at least one positive and one negative for AUC
             try:
-                auc_roc.append(roc_auc_score(y_true[valid_indices, i], y_pred[valid_indices, i]))
+                auc = roc_auc_score(y_true[mask, i], y_pred[mask, i])
+                auc_roc_list.append(auc)
             except ValueError as e:
-                print(f"Error calculating ROC AUC for task {i}: {e}")
-                auc_roc.append(np.nan)
+                print(f"⚠️  ROC AUC error for task {i}: {e}")
+                auc_roc_list.append(np.nan)
         else:
-            auc_roc.append(np.nan)
+            auc_roc_list.append(np.nan)
 
-    avg_auc_roc = np.nanmean(auc_roc)
+    # Average over valid tasks
+    avg_auc_roc = np.nanmean(auc_roc_list) if len(auc_roc_list) > 0 else 0.0
 
-    return np.array(losses).mean(), avg_auc_roc
-
+    return np.mean(losses), avg_auc_roc
 
 
 def train_multi_cls(model, optimizer, loss_function, train_loader, val_loader, num_epochs, device, edge_attr, pass_data, tensorboard_writer):
-
+    """
+    Train multi-task classification model with early stopping and LR scheduling.
+    """
     writer = SummaryWriter(f'runs/{tensorboard_writer}')
 
+    # Scheduler: Reduce LR when validation loss plateaus
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
     best_model = None
-    best_val_auc = 0
+    best_val_auc = 0.0
     best_val_loss = float('inf')
+    patience_counter = 0
+    PATIENCE = 10
 
     for epoch in range(1, num_epochs + 1):
-        train_loss, train_auc = run_epoch_multi_cls(model, optimizer, train_loader,loss_function, device, edge_attr, pass_data)
+        # Training
+        train_loss, train_auc = run_epoch_multi_cls(
+            model, optimizer, train_loader, loss_function, device, edge_attr, pass_data
+        )
         writer.add_scalar('loss/train', train_loss, epoch)
         writer.add_scalar('auc/train', train_auc, epoch)
 
-        val_loss, val_auc = run_epoch_multi_cls(model, None, val_loader,loss_function, device, edge_attr, pass_data)
+        # Validation
+        val_loss, val_auc = run_epoch_multi_cls(
+            model, None, val_loader, loss_function, device, edge_attr, pass_data
+        )
         writer.add_scalar('loss/val', val_loss, epoch)
         writer.add_scalar('auc/val', val_auc, epoch)
 
-        print(f'Epoch: {epoch:03d}, Train loss: {train_loss:.4f}, Train ROC-AUC: {train_auc:.4f}, Val loss: {val_loss:.4f}, Val ROC-AUC: {val_auc:.4f}')
+        print(f'Epoch {epoch:03d} | '
+              f'Train Loss: {train_loss:.4f} | Train AUC: {train_auc:.4f} | '
+              f'Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f}')
 
-        if val_auc > best_val_auc:
+        # Step scheduler based on validation loss
+        scheduler.step(val_loss)
+
+        # Early stopping & model checkpointing
+        if val_loss < best_val_loss:  
             best_val_auc = val_auc
             best_val_loss = val_loss
             best_model = deepcopy(model)
+            patience_counter = 0
+            print(f"✅ New best model (Val AUC: {val_auc:.4f}) at epoch {epoch}")
+        else:
+            patience_counter += 1
+            print(f"⚠️  No improvement. Patience: {patience_counter}/{PATIENCE}")
 
-    writer.close()  # Close TensorBoard writer
-    
+        if patience_counter >= PATIENCE:
+            print(f"🛑 Early stopping at epoch {epoch}")
+            break
+
+    writer.close()
+
     return {
         'best_model': best_model,
         'best_val_loss': best_val_loss,
-        'best_val_auc': best_val_auc
+        'best_val_auc': best_val_auc,
+        'stopped_epoch': epoch
     }
