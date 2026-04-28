@@ -278,6 +278,16 @@ def train_multi_cls(model, optimizer, loss_function, train_loader, val_loader, n
             patience_counter += 1
             print(f"⚠️  No improvement. Patience: {patience_counter}/{PATIENCE}")
 
+        # if val_auc > best_val_auc:  
+        #     best_val_auc = val_auc
+        #     best_val_loss = val_loss 
+        #     best_model = deepcopy(model)
+        #     patience_counter = 0
+        #     print(f"✅ New best model (Val AUC: {val_auc:.4f}) at epoch {epoch}")
+        # else:
+        #     patience_counter += 1
+        #     print(f"⚠️ No improvement. Patience: {patience_counter}/{PATIENCE}")
+
         if patience_counter >= PATIENCE:
             print(f"🛑 Early stopping at epoch {epoch}")
             break

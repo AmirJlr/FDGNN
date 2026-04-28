@@ -434,10 +434,13 @@ class DTsetBasic(InMemoryDataset):
 
 
 class DTsetBasicMulti(InMemoryDataset):
-    def __init__(self, root, filename, smiles_column,
+    def __init__(self, root, filename, smiles_column, label_columns,
                  ECFP, Topological, MACCS, EState, Rdkit2D, Phar2D):
         self.filename = filename
         self.smiles_column = smiles_column
+
+        # اطمینان از اینکه label_columns حتماً یک لیست است
+        self.label_columns = label_columns if isinstance(label_columns, list) else [label_columns]
 
         self.ECFP = ECFP
         self.Topological = Topological
@@ -477,7 +480,10 @@ class DTsetBasicMulti(InMemoryDataset):
             g.x = g.x.float()
 
             # Extract all task labels
-            label_vals = df.loc[i, label_columns].values.astype(np.float32)
+            # label_vals = df.loc[i, label_columns].values.astype(np.float32)
+
+            # تغییر 2: استفاده از self.label_columns به جای استخراج اتوماتیک
+            label_vals = df.loc[i, self.label_columns].values.astype(np.float32)
             g.y = torch.tensor(label_vals, dtype=torch.float).view(1, -1)  # Shape: [1, num_tasks]
 
             # Optional: Log if all labels missing

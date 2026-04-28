@@ -49,6 +49,63 @@ class GRUAttentionPooling(nn.Module):
         return torch.stack(pooled_outputs, dim=0)
 
 
+
+class CGRUAttentionPooling(nn.Module):
+    def __init__(self, input_dim, hidden_dim, processing_steps=3):
+        super().__init__()
+        self.processing_steps = processing_steps # T steps
+        
+        # استفاده از GRUCell به جای GRU
+        # ورودی سلول: ویژگی استخراج شده از گراف (input_dim)
+        # حالت پنهان سلول: همان بردار پرس‌وجو یا Query (hidden_dim)
+        self.gru_cell = nn.GRUCell(input_dim, hidden_dim)
+        
+        # شبکه Attention: ترکیب ویژگی نودها و بردار Query برای محاسبه وزن
+        self.attention = nn.Linear(input_dim + hidden_dim, 1)
+
+    def forward(self, x, batch):
+        pooled_outputs = []
+        num_graphs = batch.max().item() + 1
+        
+        for i in range(num_graphs):
+            # نودهای مربوط به یک گراف خاص
+            nodes = x[batch == i]  # Shape: [num_nodes, input_dim]
+            num_nodes = nodes.size(0)
+            
+            # مقداردهی اولیه بردار Query (q_0) با صفر
+            q_t = torch.zeros(1, self.gru_cell.hidden_size, device=x.device)
+            
+            step_outputs = []
+            
+            # حلقه روی مراحل پردازش (T)، نه روی نودها!
+            for t in range(self.processing_steps):
+                # تکثیر بردار Query به تعداد نودها برای محاسبه Attention
+                q_t_expanded = q_t.expand(num_nodes, -1) # Shape: [num_nodes, hidden_dim]
+                
+                # ترکیب ویژگی نودها با بردار Query مرحله فعلی
+                attn_input = torch.cat([nodes, q_t_expanded], dim=-1)
+                
+                # محاسبه وزن‌های Attention برای تمام نودها به صورت همزمان
+                attn_weights = F.softmax(self.attention(attn_input), dim=0) # [num_nodes, 1]
+                
+                # محاسبه o_t: جمع وزن‌دار نودها بر اساس Attention
+                # این بخش کاملاً Permutation Invariant است
+                o_t = torch.sum(attn_weights * nodes, dim=0, keepdim=True) # [1, input_dim]
+                
+                # به‌روزرسانی Query برای مرحله بعد توسط GRU
+                q_t = self.gru_cell(o_t, q_t) # [1, hidden_dim]
+                
+                # ذخیره خروجی این مرحله
+                step_outputs.append(o_t.squeeze(0))
+            
+            # اتصال خروجی تمام مراحل به هم (z_G = o_1 \oplus o_2 \dots \oplus o_T)
+            graph_embedding = torch.cat(step_outputs, dim=-1) 
+            pooled_outputs.append(graph_embedding)
+            
+        return torch.stack(pooled_outputs, dim=0)
+
+
+
 ############### Main Model (GINGAT) ###############
 class GINGAT(nn.Module):
     def __init__(self, node_dim, edge_dim, hidden_channels, out_channels, heads,
